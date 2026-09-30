@@ -50,6 +50,7 @@ commands = [
     "maxPanelHeight 1000",
     "preference FLANKING_REGION 1000",
     "preference SAM.SHADE_ALIGNMENT_BY MAPPING_QUALITY_HIGH",
+    "preference SAM.QUICK_CONSENSUS_MODE true",
 ]
 
 # Select a genome if specified in input.yaml.
@@ -64,7 +65,8 @@ commands.extend([
     "viewaspairs",
     "group REFERENCE_CONCORDANCE",
     "colorBy UNEXPECTED_PAIR",
-    "collapse",
+    "squish", # collapse / squish / expand
+    'collapse "Refseq All"',
 ])
 
 # Keep image paths in the same order as the regions.
@@ -115,8 +117,8 @@ pdf = canvas.Canvas(str(pdf_path))
 pdf.setTitle(samples_names)
 
 margin = 20
-heading_height = 30
-scale = 72 / 150  # Display images at 150 pixels per inch.
+heading_height = 50
+scale = 1
 
 for region, image_path in screenshots:
     image = ImageReader(str(image_path))

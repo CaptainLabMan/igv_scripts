@@ -1,8 +1,10 @@
 genome: hg38
 
 controls:
-  - name: Control_1
+  - name: Control_1_XX
     bam: https://ngs-data-ccu.epigenetic.ru/ngs_db/1862995/range_response/000007441020.bam
+  - name: Control_2_XY
+    bam: htsget://ngs-data-ccu.epigenetic.ru/reads/htsget_ticket/1787791/000007443390.bam/?format=BAM
 
 samples:
   - name: 000007140590
