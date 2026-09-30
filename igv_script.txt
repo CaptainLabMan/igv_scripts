@@ -1,0 +1,21 @@
+new
+snapshotDirectory "/Users/andrejnekrasov/pro/my/igv_scripts/snapshots/000007140590"
+maxPanelHeight 1000
+preference FLANKING_REGION 1000
+preference SAM.SHADE_ALIGNMENT_BY MAPPING_QUALITY_HIGH
+genome hg38
+load "htsget://ngs-data-ccu.epigenetic.ru/reads/htsget_ticket/793854/000007140590.bam/?format=BAM"
+load "https://ngs-data-ccu.epigenetic.ru/ngs_db/1862995/range_response/000007441020.bam"
+viewaspairs
+group REFERENCE_CONCORDANCE
+colorBy UNEXPECTED_PAIR
+collapse
+goto PPP1R21
+group NONE
+group REFERENCE_CONCORDANCE
+snapshot "001_PPP1R21.png"
+goto TBCK
+group NONE
+group REFERENCE_CONCORDANCE
+snapshot "002_TBCK.png"
+exit
