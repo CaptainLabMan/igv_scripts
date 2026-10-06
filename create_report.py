@@ -1,28 +1,27 @@
+from datetime import datetime
 from pathlib import Path
+import re
 import subprocess
 
+import reportlab
 import yaml
+from PIL import Image, ImageDraw, ImageFont
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 
 # =============================================================================
-# Settings
+# Settings and input
 # =============================================================================
 main_path = Path(__file__).resolve().parent
 script_path = main_path / "igv_script.txt"
-#igv_path = Path("/path/to/IGV/igv.sh")
-igv_path = 'igv'
+igv_path = "igv"
 
-
-# =============================================================================
-# Read input
-# =============================================================================
 with (main_path / "input.yaml").open(encoding="utf-8") as file:
     config = yaml.safe_load(file)
 
 samples = config["samples"]
-controls = config.get("controls", [])
+controls = config.get("controls") or []
 
 regions = [
     region.strip()
@@ -30,13 +29,18 @@ regions = [
     if region.strip()
 ]
 
+max_panel_height = config.get("maxPanelHeight", 1000)
+
 if not samples or not regions:
     raise ValueError("Specify at least one sample and one region")
 
-samples_names = "_".join(sample["name"] for sample in samples)
+if type(max_panel_height) is not int or max_panel_height <= 0:
+    raise ValueError("maxPanelHeight must be a positive integer")
 
-snapshots_dir = main_path / "snapshots" / samples_names
-snapshots_dir.mkdir(parents=True, exist_ok=True)
+# Use a new directory for every run to avoid mixing old and new images.
+run_name = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+snapshots_dir = main_path / "snapshots" / run_name
+snapshots_dir.mkdir(parents=True, exist_ok=False)
 
 pdf_path = snapshots_dir / "regions.pdf"
 
@@ -44,45 +48,56 @@ pdf_path = snapshots_dir / "regions.pdf"
 # =============================================================================
 # Build the IGV script
 # =============================================================================
-commands = [
-    "new",
-    f'snapshotDirectory "{snapshots_dir}"',
-    "maxPanelHeight 1000",
-    "preference FLANKING_REGION 1000",
-    "preference SAM.SHADE_ALIGNMENT_BY MAPPING_QUALITY_HIGH",
-    "preference SAM.QUICK_CONSENSUS_MODE true",
-]
-
-# Select a genome if specified in input.yaml.
-if config.get("genome"):
-    commands.append(f'genome {config["genome"]}')
-
-# Load all samples and controls into the same session.
-for sample in samples + controls:
-    commands.append(f'load "{sample["bam"]}"')
-
-commands.extend([
-    "viewaspairs",
-    "group REFERENCE_CONCORDANCE",
-    "colorBy UNEXPECTED_PAIR",
-    "squish", # collapse / squish / expand
-    'collapse "Refseq All"',
-])
-
-# Keep image paths in the same order as the regions.
+commands = []
 screenshots = []
 
-for number, region in enumerate(regions, start=1):
-    filename = f"{number:03d}_{region.replace(':', '_')}.png"
-    image_path = snapshots_dir / filename
-    screenshots.append((region, image_path))
+for sample_number, sample in enumerate(samples, start=1):
+    sample_name = str(sample["name"])
+
+    # Remove previous tracks before loading the next sample.
+    commands.append("new")
+
+    if config.get("genome"):
+        commands.append(f'genome {config["genome"]}')
 
     commands.extend([
-        f"goto {region}",
-        f'snapshot "{filename}"',
+        f'snapshotDirectory "{snapshots_dir}"',
+        f"maxPanelHeight {max_panel_height}",
+        "preference FLANKING_REGION 1000",
+        "preference SAM.SHADE_ALIGNMENT_BY MAPPING_QUALITY_HIGH",
+        "preference SAM.QUICK_CONSENSUS_MODE true",
     ])
 
-# Close this IGV instance after all snapshots are saved.
+    # Load only this sample and the shared controls.
+    for track in [sample] + controls:
+        commands.append(f'load "{sample["bam"]}" name="{sample["name"]}"')
+
+    commands.extend([
+        "viewaspairs",
+        "group REFERENCE_CONCORDANCE",
+        "colorBy UNEXPECTED_PAIR",
+        "squish",
+        'collapse "Refseq All"',
+    ])
+
+    for region_number, region in enumerate(regions, start=1):
+        # Make a filename safe for both gene names and genomic coordinates.
+        label = re.sub(
+            r"[^\w.-]+",
+            "_",
+            f"{sample_name}_{region}",
+        )[:150]
+
+        filename = f"{sample_number:03d}_{region_number:03d}_{label}.png"
+        image_path = snapshots_dir / filename
+
+        screenshots.append((sample_name, region, image_path))
+
+        commands.extend([
+            f"goto {region}",
+            f'snapshot "{filename}"',
+        ])
+
 commands.append("exit")
 
 script_path.write_text(
@@ -92,61 +107,91 @@ script_path.write_text(
 
 
 # =============================================================================
-# Run IGV and wait for it to exit
+# Run IGV
 # =============================================================================
-print("Running IGV...")
+print(
+    f"Running IGV: {len(samples)} samples, "
+    f"{len(screenshots)} screenshots..."
+)
 
 subprocess.run(
-    [str(igv_path), "-b", str(script_path)],
+    [igv_path, "-b", str(script_path)],
     cwd=main_path,
     check=True,
 )
 
-
-# =============================================================================
-# Build the PDF
-# =============================================================================
-print("Creating PDF...")
-
-# Check that all expected screenshots exist.
-for region, image_path in screenshots:
+for sample_name, region, image_path in screenshots:
     if not image_path.is_file():
-        raise FileNotFoundError(f"Missing screenshot for {region}: {image_path}")
+        raise FileNotFoundError(
+            f"Missing screenshot: {sample_name}, {region}: {image_path}"
+        )
+
+
+# =============================================================================
+# Label PNG images and combine them into one PDF
+# =============================================================================
+print("Adding image labels and creating PDF...")
+
+# Use a font included with ReportLab.
+font_path = Path(reportlab.__file__).parent / "fonts" / "Vera.ttf"
+font = ImageFont.truetype(str(font_path), 24)
 
 pdf = canvas.Canvas(str(pdf_path))
-pdf.setTitle(samples_names)
+pdf.setTitle("IGV report")
 
 margin = 20
-heading_height = 50
-scale = 1
+heading_height = 90
 
-for region, image_path in screenshots:
-    image = ImageReader(str(image_path))
-    width, height = image.getSize()
+for sample_name, region, image_path in screenshots:
+    title_lines = [
+        f"Sample: {sample_name}",
+        f"Region: {region}",
+    ]
 
-    width *= scale
-    height *= scale
+    with Image.open(image_path) as original:
+        # Add space above the image without resizing the original plot.
+        text_width = max(font.getbbox(line)[2] for line in title_lines)
+        width = max(original.width, text_width + 40)
 
-    # Give each image its own page without changing its proportions.
-    page_width = width + 2 * margin
-    page_height = height + 2 * margin + heading_height
+        image = Image.new(
+            "RGB",
+            (width, original.height + heading_height),
+            "white",
+        )
+        image.paste(original, (0, heading_height))
 
-    pdf.setPageSize((page_width, page_height))
+    draw = ImageDraw.Draw(image)
 
-    pdf.setFont("Helvetica-Bold", 14)
-    pdf.drawString(margin, page_height - margin - 14, region)
+    for number, line in enumerate(title_lines):
+        draw.text(
+            (20, 10 + number * 35),
+            line,
+            font=font,
+            fill="black",
+        )
+
+    image.save(image_path)
+
+    # Embed the labelled PNG without reducing its resolution.
+    width, height = image.size
+
+    pdf.setPageSize((
+        width + 2 * margin,
+        height + 2 * margin,
+    ))
 
     pdf.drawImage(
-        image,
+        ImageReader(image),
         margin,
         margin,
         width=width,
         height=height,
-        mask="auto",
     )
 
     pdf.showPage()
+    image.close()
 
 pdf.save()
 
+print(f"PNG directory: {snapshots_dir}")
 print(f"PDF saved: {pdf_path}")
